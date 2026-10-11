@@ -14,11 +14,13 @@
     python chenyu_api.py images [--page 1] [--cuda 12.8] [--python 3.12]
     python chenyu_api.py create --image <image_uuid> --gpu <gpu_uuid> [--nums 1]
     python chenyu_api.py start|shutdown|restart|destroy <instance_uuid>
-    python chenyu_api.py wait <instance_uuid> [--until 2] [--timeout 900]
-    python chenyu_api.py --json balance          # 任何子命令都可加 --json 输出原始响应
+    python chenyu_api.py save-image <instance_uuid> --name <镜像名> [--remark 说明]
+    python chenyu_api.py wait <instance_uuid> [--field status|save_image_status] [--until 2] [--timeout 900]
 
 只读命令（balance/instances/info/gpus/images）可随时执行；
-start/shutdown/restart/destroy/create 会改动账号资源，执行前先确认目标实例。
+start/shutdown/restart/destroy/create/save-image 会改动账号资源，执行前先确认目标实例。
+
+注意：save-image 只能在实例【运行中】保存，且保存发起后实例会保持运行、完成后自动关机。
 """
 import argparse
 import json
@@ -36,6 +38,7 @@ STATUS = {
     21: "关机中", 22: "已关机", 23: "已关机(异常)", 24: "开机中", 27: "重启中",
 }
 STOPPED = {4, 22, 23}
+SAVE_STATUS = {1: "上传中", 2: "上传成功", 3: "上传失败"}
 
 
 def status_text(code):
@@ -117,6 +120,15 @@ def cmd_ssh(a):
     sys.exit("该实例没有 SSH 映射，可能尚未运行")
 
 
+def cmd_private_images(a):
+    params = {"page": a.page, "page_size": a.page_size}
+    d = call("GET", "/image/private/list", params).get("data", {})
+    items = d.get("image_list") or d.get("list") or []
+    print(f"共 {d.get('total', len(items))} 个私有镜像")
+    for im in items:
+        print(" ", json.dumps(im, ensure_ascii=False))
+
+
 def cmd_gpus(a):
     for g in call("GET", "/gpu/list").get("data", {}).get("gpu_list", []):
         p = g.get("price", {})
@@ -154,25 +166,38 @@ def _simple_action(path):
     return run
 
 
+def cmd_save_image(a):
+    body = {"instance_uuid": a.uuid}
+    if a.name:
+        body["image_name"] = a.name
+    if a.remark:
+        body["remark"] = a.remark
+    res = call("POST", "/instance/save_image", body=body)
+    print(f"save_image -> code={res.get('code')} {res.get('msg')}")
+    print("保存期间实例保持运行，完成后自动关机；用 wait --field save_image_status --until 2 等它传完")
+
+
 def cmd_wait(a):
     t0 = time.time()
     while True:
         d = call("GET", "/instance/info", {"instance_uuid": a.uuid}).get("data", {})
-        st = d.get("status")
-        if st == a.until:
-            print(f"已到达目标状态 {status_text(st)}，耗时 {time.time() - t0:.0f}s")
+        cur = d.get(a.field)
+        label = status_text(cur) if a.field == "status" else f"{cur} {SAVE_STATUS.get(cur, '未知')}"
+        if cur == a.until:
+            print(f"已到达目标值 {label}，耗时 {time.time() - t0:.0f}s")
             return
-        if a.until == 2 and st in STOPPED:
-            sys.exit(f"实例处于 {status_text(st)}，等不到运行中，请先 start")
+        if a.field == "status" and a.until == 2 and cur in STOPPED:
+            sys.exit(f"实例处于 {label}，等不到运行中，请先 start")
+        if a.field == "save_image_status" and cur == 3:
+            sys.exit("镜像保存失败（save_image_status=3）")
         if time.time() - t0 > a.timeout:
-            sys.exit(f"等待超时（当前 {status_text(st)}）")
-        print(f"  等待中… {status_text(st)}  {time.time() - t0:.0f}s")
+            sys.exit(f"等待超时（当前 {label}）")
+        print(f"  等待中… {label}  {time.time() - t0:.0f}s")
         time.sleep(a.interval)
 
 
 def main():
     ap = argparse.ArgumentParser(description="晨羽智云开放 API 封装")
-    ap.add_argument("--json", action="store_true", help="输出原始 JSON 响应")
     sub = ap.add_subparsers(dest="cmd", required=True)
 
     sub.add_parser("balance").set_defaults(fn=cmd_balance)
@@ -181,6 +206,8 @@ def main():
     p = sub.add_parser("ssh"); p.add_argument("uuid")
     p.add_argument("--show-password", action="store_true"); p.set_defaults(fn=cmd_ssh)
     sub.add_parser("gpus").set_defaults(fn=cmd_gpus)
+    p = sub.add_parser("private-images"); p.add_argument("--page", type=int, default=1)
+    p.add_argument("--page_size", type=int, default=20); p.set_defaults(fn=cmd_private_images)
     p = sub.add_parser("images"); p.add_argument("--page", type=int, default=1)
     p.add_argument("--page_size", type=int, default=10)
     p.add_argument("--cuda", default=""); p.add_argument("--python", default="")
@@ -192,16 +219,18 @@ def main():
                        ("restart", "/instance/restart"), ("destroy", "/instance/destroy")):
         p = sub.add_parser(name); p.add_argument("uuid")
         p.set_defaults(fn=_simple_action(path))
+    p = sub.add_parser("save-image"); p.add_argument("uuid")
+    p.add_argument("--name", default="", help="私有镜像名，需唯一")
+    p.add_argument("--remark", default="")
+    p.set_defaults(fn=cmd_save_image)
     p = sub.add_parser("wait"); p.add_argument("uuid")
+    p.add_argument("--field", default="status", choices=["status", "save_image_status"])
     p.add_argument("--until", type=int, default=2)
     p.add_argument("--timeout", type=int, default=900)
     p.add_argument("--interval", type=int, default=10)
     p.set_defaults(fn=cmd_wait)
 
     a = ap.parse_args()
-    if a.json:
-        print(json.dumps(call("GET", "/balance/info"), ensure_ascii=False, indent=2))
-        return
     a.fn(a)
 
 

@@ -124,7 +124,27 @@ python scripts/chenyu_api.py ssh <instance_uuid> --show-password
 ```text
 gpu_uuid   a7f3d92e4c5b4a7e9b8c6f1e2d3a4b5c   NVIDIA GeForce RTX 5090
 image_uuid 5d032d73ca9941ea976b5410bfd9fd2d   image 4035b0d9f87447cd858f981f7e0d5faa:v2.7
+image_uuid b72e74eb15d14aacac38a9dc48deb1d9   saved snapshot, 31 layers / 21.4 GB
 ```
+
+### Saving an image before destroying
+
+`POST /instance/save_image` only works while the instance is **running**, and the instance stops by itself once the save is requested. Two different status fields are involved, and conflating them costs you the snapshot:
+
+- `instance/info` → `save_image_status` flips to `2` as soon as the save is *accepted*.
+- `image/private/list` → each image entry carries its own `save_image_status`; only `2` there means the layers finished uploading.
+
+Wait for the **image-level** field before destroying, otherwise the snapshot can be lost:
+
+```powershell
+python scripts/chenyu_api.py save-image <instance_uuid> --name <name>
+python scripts/chenyu_api.py wait <instance_uuid> --field save_image_status --until 2
+python scripts/chenyu_api.py private-images            # poll until save_image_status is 2
+python scripts/chenyu_api.py destroy <instance_uuid>
+```
+
+In practice the platform assigns the image title itself (the saved snapshot kept the source pod's name, e.g. `…ComfyUI基础环境…-z-image`), so `--name` may not be honoured. Identify the snapshot by `uuid`, and pass that uuid to `create --image` next time to get the same ComfyUI plus the deployed project back without re-uploading anything.
+
 
 ### Cost-saving loop
 
