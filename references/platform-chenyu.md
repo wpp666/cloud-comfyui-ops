@@ -179,4 +179,5 @@ Two rules before you destroy:
 
 - **`destroy` wipes the whole overlay**, including everything deployed under `/root`. Weights on the shared mounts (`/chenyudata`, `/models`) survive; your project tree does not. Keep the local project and the upload package so a fresh instance can be re-seeded in a couple of minutes.
 - **Never shut down or destroy an instance with a batch still running.** Check the output-file count and the generator process first.
+- **Verify that a destroy actually happened.** `POST /instance/destroy` can answer `code=0` while the instance is still listed (observed on a 3090 test: it stayed as status `4` until a second call). Re-read `GET /instance/list` and confirm the uuid is gone before believing it. The same habit applies to every action endpoint: check `code`, then check the resulting state.
 

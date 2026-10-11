@@ -124,6 +124,26 @@ def wait_status(uuid, until, timeout, interval=15):
         time.sleep(interval)
 
 
+def must(res, what):
+    """接口返回 code!=0 时直接失败，别把失败当成功往下走。"""
+    if res.get("code") != 0:
+        sys.exit(f"{what} 失败：code={res.get('code')} {res.get('msg')}")
+    return res
+
+
+def wait_gone(uuid, timeout=300, interval=10):
+    """销毁后复核：直到实例从列表消失才算真的销毁。"""
+    t0 = time.time()
+    while time.time() - t0 < timeout:
+        items = cy.call("GET", "/instance/list").get("data", {}).get("instance_list", []) or []
+        if uuid not in [i.get("instance_uuid") for i in items]:
+            log("实例已从列表消失")
+            return True
+        time.sleep(interval)
+    log(f"警告：销毁请求已接受，但 {uuid} 仍在列表中；请用 chenyu_api.py instances 复核")
+    return False
+
+
 def build_package(project, cloud_config):
     """按 manifest 收集要上传的文件，外加运行脚本与云端配置，打成 tar 字节。"""
     man = json.loads((project / "production" / "manifest.json").read_text(encoding="utf-8"))
@@ -184,6 +204,8 @@ def main():
         return
     if a.dry:
         gpu_uuid, gpu_desc = "", (a.gpu or "（未指定；正式运行时会列出可选 GPU 让你选）")
+    elif a.instance:
+        gpu_uuid, gpu_desc = "", "（复用现有实例，不创建）"
     else:
         gpu = resolve_gpu(a.gpu)
         gpu_uuid = gpu.get("gpu_uuid")
@@ -206,9 +228,12 @@ def main():
         if uuid:
             log(f"复用实例 {uuid}")
         else:
-            r = cy.call("POST", "/instance/create_by_image",
-                        body={"image_uuid": a.image, "gpu_uuid": gpu_uuid, "gpu_nums": a.gpu_nums})
+            r = must(cy.call("POST", "/instance/create_by_image",
+                             body={"image_uuid": a.image, "gpu_uuid": gpu_uuid, "gpu_nums": a.gpu_nums}),
+                     "创建实例")
             uuid = (r.get("data") or {}).get("instance_uuid", "")
+            if not uuid:
+                sys.exit(f"创建实例未返回 uuid：{r}")
             log(f"已创建实例 {uuid}")
         wait_status(uuid, 2, 1800)
 
@@ -270,18 +295,18 @@ def main():
 
         if a.save_image:
             log("保存镜像（实例随后会自动关机）…")
-            cy.call("POST", "/instance/save_image", body={"instance_uuid": uuid})
-            cy.call("GET", "/instance/info", {"instance_uuid": uuid})
+            must(cy.call("POST", "/instance/save_image", body={"instance_uuid": uuid}), "保存镜像")
             log("镜像保存已发起，注意还要等 image/private/list 里该镜像的 save_image_status 变成 2")
 
         if a.after == "destroy":
             if a.save_image:
                 log("已请求存镜像，稍后再销毁；本次不自动销毁，请确认镜像层传完再手动 destroy")
             else:
-                cy.call("POST", "/instance/destroy", body={"instance_uuid": uuid})
-                log("实例已销毁")
+                must(cy.call("POST", "/instance/destroy", body={"instance_uuid": uuid}), "销毁实例")
+                log("销毁请求已接受，复核中…")
+                wait_gone(uuid)
         elif a.after == "shutdown":
-            cy.call("POST", "/instance/shutdown", body={"instance_uuid": uuid})
+            must(cy.call("POST", "/instance/shutdown", body={"instance_uuid": uuid}), "关机")
             log("实例已关机（保盘）")
         else:
             log(f"保留实例 {uuid} 运行")
