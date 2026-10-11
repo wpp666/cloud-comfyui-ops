@@ -87,3 +87,61 @@ Roughly 3.3–3.9x a local RTX 3070 Ti on the same settings.
 - `/root/ComfyUI/models/vae/MiniMax/` is a real directory while its siblings are symlinked trees; a plain `find` at depth 3 will find files there but miss the symlinked roots. Verify against `/object_info`, not `find`.
 - `link.sh` performs a destructive-looking symlink rebuild and also copies two `Joy_caption` adapter configs. Do not run it casually.
 - Memory: `free -g` shows the host. Plan against `ram_total` from `GET /system_stats` (96 GB here), otherwise a 62 GB bf16 model plus a 26–48 GB text encoder will swap.
+
+## Instance lifecycle over the open API
+
+Everything the console does is available over the open API, which makes the whole rent → run → fetch → destroy loop scriptable. Use [scripts/chenyu_api.py](../scripts/chenyu_api.py); the key is read from `CHENYU_API_KEY` and never written to disk.
+
+```text
+Base URL   https://www.chenyu.cn/api/open/v2
+Auth       Authorization: Bearer <API key>
+Docs       https://enterprise.chenyu.cn/api-reference/introduction
+```
+
+| Operation | Method and path |
+| --- | --- |
+| Balance | `GET /balance/info` |
+| Instances | `GET /instance/list` |
+| Instance detail, including `server_map` with SSH host / port / user / password | `GET /instance/info?instance_uuid=` |
+| GPU models and prices | `GET /gpu/list` |
+| Market images | `GET /image/market/list` |
+| Create from image | `POST /instance/create_by_image` with `{image_uuid, gpu_uuid, gpu_nums}` |
+| Start / shutdown / restart / destroy | `POST /instance/{startup,shutdown,restart,destroy}` with `{instance_uuid}` |
+| Scheduled shutdown, idle shutdown, rename, save as image | `POST /instance/{set_shutdown_timer,set_idle_close,update_title,save_image}` |
+
+Instance status: `0` created, `1` booting (first boot), `2` running, `3` / `21` shutting down, `4` / `22` powered off, `23` powered off (abnormal), `24` booting, `27` restarting. Wait for `2` before connecting.
+
+`server_map` returns the SSH credentials, so no manual copy-paste is needed to drive `rc.py`:
+
+```powershell
+$env:CHENYU_API_KEY = "sk-..."
+python scripts/chenyu_api.py ssh <instance_uuid>          # host / port / user, password masked
+python scripts/chenyu_api.py ssh <instance_uuid> --show-password
+```
+
+### Known-good identifiers for this account
+
+```text
+gpu_uuid   a7f3d92e4c5b4a7e9b8c6f1e2d3a4b5c   NVIDIA GeForce RTX 5090
+image_uuid 5d032d73ca9941ea976b5410bfd9fd2d   image 4035b0d9f87447cd858f981f7e0d5faa:v2.7
+```
+
+### Cost-saving loop
+
+The instance bills while it runs, so create it for the job and get rid of it afterwards.
+
+```text
+1. chenyu_api.py create --image <image_uuid> --gpu <gpu_uuid>
+2. chenyu_api.py wait <instance_uuid>                  # until status 2
+3. chenyu_api.py ssh <instance_uuid> --show-password   # feed host/port/user into rc.py
+4. upload the scripts and the project artifacts, start ComfyUI, dry run
+5. run the batch, poll, fetch the results
+6. chenyu_api.py shutdown <instance_uuid>              # keep the disk, quick to resume
+   chenyu_api.py destroy  <instance_uuid>              # work is finished, release everything
+```
+
+Two rules before you destroy:
+
+- **`destroy` wipes the whole overlay**, including everything deployed under `/root`. Weights on the shared mounts (`/chenyudata`, `/models`) survive; your project tree does not. Keep the local project and the upload package so a fresh instance can be re-seeded in a couple of minutes.
+- **Never shut down or destroy an instance with a batch still running.** Check the output-file count and the generator process first.
+
