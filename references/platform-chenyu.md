@@ -145,6 +145,9 @@ python scripts/chenyu_api.py destroy <instance_uuid>
 
 In practice the platform assigns the image title itself (the saved snapshot kept the source pod's name, e.g. `…ComfyUI基础环境…-z-image`), so `--name` may not be honoured. Identify the snapshot by `uuid`, and pass that uuid to `create --image` next time to get the same ComfyUI plus the deployed project back without re-uploading anything.
 
+A snapshot is a snapshot of one pod, so treat cross-model reuse as unverified: this one was taken from a 5090 pod, and booting it on a different GPU model is not guaranteed. If a fresh instance from the snapshot does not come up, go back to the 5090, or create from a base image and use `--upload` to ship the project instead.
+
+
 
 ### Cost-saving loop
 

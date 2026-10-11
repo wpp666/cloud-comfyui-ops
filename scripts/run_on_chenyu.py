@@ -8,7 +8,9 @@
 典型用法：
     # 用之前存的快照镜像起机器（镜像里已带 ComfyUI 与部署好的工程，不必重传）
     set CHENYU_API_KEY=sk-...
-    python run_on_chenyu.py --project f:\\归人-mv --all --megapixels 0.6 --run-name h3_videos_cloud_0p6
+    python run_on_chenyu.py --list-gpus                       # 先看有哪些规格与价格
+    python run_on_chenyu.py --project f:\\归人-mv --all --gpu 5090 --megapixels 0.6 --run-name h3_videos_cloud_0p6
+    python run_on_chenyu.py --project f:\\归人-mv --all       # --gpu 留空则当场交互选择
 
     # 从基础镜像起机器，需要把工程一起传上去
     python run_on_chenyu.py --project f:\\归人-mv --all --upload \\
@@ -33,7 +35,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import chenyu_api as cy  # noqa: E402
 
 DEFAULT_IMAGE = "b72e74eb15d14aacac38a9dc48deb1d9"   # 存好的 ComfyUI 快照
-DEFAULT_GPU = "a7f3d92e4c5b4a7e9b8c6f1e2d3a4b5c"     # RTX 5090
 REMOTE_BASE = "/root/mv"
 COMFY = "/root/ComfyUI"
 COMFY_START = ("cd {c} && setsid nohup python3 main.py --listen 0.0.0.0 "
@@ -66,6 +67,45 @@ def ssh_info_of(uuid):
         if svc.get("port_type") == "ssh" and svc.get("ssh_info"):
             return svc["ssh_info"]
     sys.exit("实例上没有 SSH 映射，可能还没就绪")
+
+
+def gpu_options():
+    items = cy.call("GET", "/gpu/list").get("data", {}).get("gpu_list", [])
+    return [g for g in items if g.get("status") == 1]
+
+
+def print_gpus(opts):
+    for i, g in enumerate(opts, 1):
+        p = g.get("price") or {}
+        print(f"  {i}. {g.get('gpu_name')}   {p.get('hour')}/时   {p.get('day')}/天   {g.get('gpu_uuid')}")
+
+
+def resolve_gpu(spec):
+    """spec 空 → 交互选择；纯数字 → 序号；uuid → 直接用；否则按名称片段匹配。"""
+    opts = gpu_options()
+    if not opts:
+        sys.exit("平台当前没有可用 GPU")
+    if not spec:
+        if not sys.stdin.isatty():
+            sys.exit("未指定 --gpu；请先 --list-gpus 查看，再传 uuid / 序号 / 名称片段")
+        print("可选 GPU：")
+        print_gpus(opts)
+        spec = input("请选择（序号或名称片段）: ").strip()
+        if not spec:
+            sys.exit("未选择 GPU")
+    if spec.isdigit() and 1 <= int(spec) <= len(opts):
+        return opts[int(spec) - 1]
+    for g in opts:
+        if spec.lower() == str(g.get("gpu_uuid", "")).lower():
+            return g
+    hits = [g for g in opts if spec.lower() in str(g.get("gpu_name", "")).lower()]
+    if len(hits) == 1:
+        return hits[0]
+    if not hits:
+        sys.exit(f"没有匹配 '{spec}' 的 GPU，用 --list-gpus 看可选值")
+    print(f"'{spec}' 匹配到多款：")
+    print_gpus(hits)
+    sys.exit("请用更精确的名称片段或序号")
 
 
 def wait_status(uuid, until, timeout, interval=15):
@@ -109,7 +149,9 @@ def main():
     ap.add_argument("--project", required=True, help="本地工程根，需含 production/manifest.json")
     ap.add_argument("--instance", default="", help="复用已在运行的实例 uuid（给了就不再创建）")
     ap.add_argument("--image", default=DEFAULT_IMAGE)
-    ap.add_argument("--gpu", default=DEFAULT_GPU)
+    ap.add_argument("--gpu", default="", help="GPU uuid / 序号 / 名称片段；留空则交互选择")
+    ap.add_argument("--gpu-nums", type=int, default=1, choices=[1, 2, 4, 8])
+    ap.add_argument("--list-gpus", action="store_true", help="列出可用 GPU 与价格后退出")
     ap.add_argument("--project-name", default="guiren", help="远端工程名，根目录为 /root/mv/<名>-mv")
     ap.add_argument("--run-name", default="h3_videos_cloud", help="远端输出子目录名，同时也是本地回传子目录名")
     ap.add_argument("--all", action="store_true", help="跑 manifest 全部段落（默认）")
@@ -135,7 +177,17 @@ def main():
            f"--megapixels {a.megapixels} --aspect {a.aspect} "
            f"--out-dir {remote_out}")
 
+    if a.list_gpus:
+        print_gpus(gpu_options())
+        return
+    if a.dry:
+        gpu_uuid, gpu_desc = "", (a.gpu or "（未指定；正式运行时会列出可选 GPU 让你选）")
+    else:
+        gpu = resolve_gpu(a.gpu)
+        gpu_uuid = gpu.get("gpu_uuid")
+        gpu_desc = f"{gpu.get('gpu_name')} x{a.gpu_nums}  {gpu_uuid}"
     log(f"段落 {len(ids)} 个：{' '.join(ids)}")
+    log(f"云主机 {gpu_desc}")
     log(f"远端工程 {remote_root}")
     log(f"远端输出 {remote_out}")
     log(f"本地回传 {local_out}")
@@ -153,7 +205,7 @@ def main():
             log(f"复用实例 {uuid}")
         else:
             r = cy.call("POST", "/instance/create_by_image",
-                        body={"image_uuid": a.image, "gpu_uuid": a.gpu, "gpu_nums": 1})
+                        body={"image_uuid": a.image, "gpu_uuid": gpu_uuid, "gpu_nums": a.gpu_nums})
             uuid = (r.get("data") or {}).get("instance_uuid", "")
             log(f"已创建实例 {uuid}")
         wait_status(uuid, 2, 1800)
