@@ -75,9 +75,11 @@ def gpu_options():
 
 
 def print_gpus(opts):
+    print("  计费默认按小时；按天为备选，单独标注")
     for i, g in enumerate(opts, 1):
         p = g.get("price") or {}
-        print(f"  {i}. {g.get('gpu_name')}   {p.get('hour')}/时   {p.get('day')}/天   {g.get('gpu_uuid')}")
+        day = f"按天 ¥{p.get('day')}" if p.get("day") else "按天 无"
+        print(f"  {i}. {g.get('gpu_name')}   按小时 ¥{p.get('hour')}   （{day}）   {g.get('gpu_uuid')}")
 
 
 def resolve_gpu(spec):

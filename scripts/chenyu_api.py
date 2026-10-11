@@ -130,10 +130,12 @@ def cmd_private_images(a):
 
 
 def cmd_gpus(a):
+    print("计费默认按小时；按天为备选，单独标注")
     for g in call("GET", "/gpu/list").get("data", {}).get("gpu_list", []):
         p = g.get("price", {})
+        day = f"（按天 ¥{p.get('day')}）" if p.get("day") else ""
         print(f"{g.get('gpu_uuid')}  {g.get('gpu_name')}  状态{g.get('status')}  "
-              f"{p.get('hour')}/时  {p.get('day')}/天")
+              f"按小时 ¥{p.get('hour')} {day}")
 
 
 def cmd_images(a):
