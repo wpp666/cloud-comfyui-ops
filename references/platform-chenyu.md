@@ -160,6 +160,18 @@ The instance bills while it runs, so create it for the job and get rid of it aft
    chenyu_api.py destroy  <instance_uuid>              # work is finished, release everything
 ```
 
+The whole loop in one command — [scripts/run_on_chenyu.py](../scripts/run_on_chenyu.py):
+
+```powershell
+# snapshot image already carries ComfyUI and the deployed project
+python scripts/run_on_chenyu.py --project <project> --all --megapixels 0.6 --run-name h3_videos_cloud_0p6
+# base image: ship the project too
+python scripts/run_on_chenyu.py --project <project> --all --upload --cloud-config <project>\production\pipeline_config.cloud.json
+python scripts/run_on_chenyu.py --project <project> --all --dry      # print the plan, create nothing
+```
+
+It creates the instance, waits for status `2`, uploads only when the remote project is absent, starts ComfyUI, runs the batch detached, polls the output count against the generator process, fetches into `<project>/production/<run-name>/`, and then applies `--after` (default `destroy`). On any failure it leaves the instance running for inspection instead of tearing it down. With `--save-image` it deliberately does not auto-destroy, because the image layers still have to finish uploading.
+
 Two rules before you destroy:
 
 - **`destroy` wipes the whole overlay**, including everything deployed under `/root`. Weights on the shared mounts (`/chenyudata`, `/models`) survive; your project tree does not. Keep the local project and the upload package so a fresh instance can be re-seeded in a couple of minutes.
